@@ -2,15 +2,31 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-from sqlalchemy import create_engine, Column, Integer, String, Date, Text
+from sqlalchemy import create_engine, Column, Integer, String, Date, Text, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from datetime import date
 
 DATABASE_URL = "sqlite:///./tasks.db"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# Create engine and session
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False}
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+# --- Ensure columns exist ---
+# SQLite: add description and priority if missing
+with engine.connect() as conn:
+    try:
+        conn.execute(text('ALTER TABLE tasks ADD COLUMN description TEXT DEFAULT ""'))
+    except Exception:
+        pass
+    try:
+        conn.execute(text('ALTER TABLE tasks ADD COLUMN priority INTEGER DEFAULT 1'))
+    except Exception:
+        pass
 
 # --- SQLAlchemy Model ---
 class TaskModel(Base):
@@ -23,7 +39,7 @@ class TaskModel(Base):
     description = Column(Text, default="")
     priority = Column(Integer, default=1)
 
-# Create tables
+# Create tables (does not recreate existing columns)
 Base.metadata.create_all(bind=engine)
 
 # --- Pydantic Schemas ---
@@ -54,8 +70,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Dependency to get DB session
-
+# Dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -63,7 +78,7 @@ def get_db():
     finally:
         db.close()
 
-# --- CRUD Endpoints ---
+# --- Endpoints ---
 @app.post("/tasks", response_model=Task, status_code=201)
 def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
     db_task = TaskModel(
