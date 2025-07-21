@@ -1,170 +1,238 @@
 import sys
 import json
-from datetime import date, datetime
-from pathlib import Path
+import threading
+from datetime import datetime
+
 import requests
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTableWidget, QTableWidgetItem, QPushButton, QComboBox,
-    QLineEdit, QLabel, QDialog, QTextEdit, QDateEdit, QHeaderView,
-    QSpinBox, QToolBar, QStatusBar, QAbstractItemView, QInputDialog
+    QLineEdit, QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
+    QDialog, QLabel, QFormLayout, QDateEdit, QSpinBox, QTextEdit,
+    QMessageBox
 )
-from PyQt6.QtGui import QPalette, QColor, QAction
-from PyQt6.QtCore import Qt, QTimer
 
-# --- Config ---
-API_URL = "https://task-tracker-api-u9j1.onrender.com"
-USERS = ["Aidan", "Joel"]
-CATEGORIES = ["Coding", "Art", "Design", "Other"]
-STATUSES = ["Inactive", "Working on it", "Testing it", "Bugged", "Stuck", "Completed"]
+API_URL = "http://127.0.0.1:8000"
 CONFIG_PATH = Path.home() / ".tasktracker_config.json"
+USERS = ["Aidan", "Ella", "Other"]
+STATUS_OPTIONS = ["Todo", "In Progress", "Done"]
+CATEGORY_OPTIONS = ["Work", "Personal", "Home", "Other"]
 
-# --- Theme ---
-def apply_dark_theme(app):
-    app.setStyle('Fusion')
-    pal = QPalette()
-    pal.setColor(QPalette.ColorRole.Window, QColor(20,20,20))
-    pal.setColor(QPalette.ColorRole.Base, QColor(30,30,30))
-    pal.setColor(QPalette.ColorRole.AlternateBase, QColor(45,45,45))
-    pal.setColor(QPalette.ColorRole.Text, QColor(240,240,240))
-    pal.setColor(QPalette.ColorRole.Button, QColor(50,50,50))
-    pal.setColor(QPalette.ColorRole.ButtonText, QColor(240,240,240))
-    pal.setColor(QPalette.ColorRole.Highlight, QColor(80,150,200))
-    pal.setColor(QPalette.ColorRole.HighlightedText, QColor(20,20,20))
-    app.setPalette(pal)
+class FetchThread(QThread):
+    fetched = pyqtSignal(list)
+    error = pyqtSignal(str)
 
-# --- Add/Edit Task Dialog ---
+    def run(self):
+        try:
+            resp = requests.get(f"{API_URL}/tasks", timeout=3)
+            resp.raise_for_status()
+            self.fetched.emit(resp.json())
+        except Exception as e:
+            self.error.emit(str(e))
+
 class TaskDialog(QDialog):
-    def __init__(self, parent, task=None):
+    def __init__(self, parent=None, task=None):
         super().__init__(parent)
-        self.setWindowTitle("New Task" if task is None else "Edit Task")
         self.task = task
-        self.resize(400,300)
-        layout = QVBoxLayout(self)
-        # Name
-        layout.addWidget(QLabel("Name:"))
-        self.name = QLineEdit(task['name'] if task else "")
-        layout.addWidget(self.name)
-        # User
-        layout.addWidget(QLabel("User:"))
-        self.user = QComboBox(); self.user.addItems(USERS)
-        if task: self.user.setCurrentText(task['user'])
-        layout.addWidget(self.user)
-        # Category
-        layout.addWidget(QLabel("Category:"))
-        self.category = QComboBox(); self.category.addItems(CATEGORIES)
-        if task:
-            cat = task['name'].split(']')[0].strip('[')
-            if cat in CATEGORIES: self.category.setCurrentText(cat)
-        layout.addWidget(self.category)
-        # Due
-        layout.addWidget(QLabel("Due Date:"))
-        self.due = QDateEdit(task and date.fromisoformat(task['due']) or date.today())
+        self.setWindowTitle("Edit Task" if task else "New Task")
+        form = QFormLayout(self)
+
+        self.name = QLineEdit(self)
+        self.category = QComboBox(self)
+        self.category.addItems(CATEGORY_OPTIONS)
+        self.user = QComboBox(self)
+        self.user.addItems(USERS)
+        if CONFIG_PATH.exists():
+            cfg = json.loads(CONFIG_PATH.read_text())
+            self.user.setCurrentText(cfg.get('username', USERS[0]))
+        self.due = QDateEdit(self)
         self.due.setCalendarPopup(True)
-        layout.addWidget(self.due)
-        # Status
-        layout.addWidget(QLabel("Status:"))
-        self.status = QComboBox(); self.status.addItems(STATUSES)
-        if task: self.status.setCurrentText(task['status'])
-        layout.addWidget(self.status)
-        # Priority
-        layout.addWidget(QLabel("Priority (1-10):"))
-        self.priority = QSpinBox(); self.priority.setRange(1,10)
-        if task: self.priority.setValue(task.get('priority',1))
-        layout.addWidget(self.priority)
-        # Description
-        layout.addWidget(QLabel("Description:"))
-        self.desc = QTextEdit(task.get('description','') if task else "")
-        layout.addWidget(self.desc)
-        # Buttons
-        btns = QHBoxLayout()
-        ok = QPushButton("Save"); ok.clicked.connect(self.accept); btns.addWidget(ok)
-        cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject); btns.addWidget(cancel)
-        layout.addLayout(btns)
+        self.status = QComboBox(self)
+        self.status.addItems(STATUS_OPTIONS)
+        self.priority = QSpinBox(self)
+        self.priority.setRange(0, 10)
+        self.description = QTextEdit(self)
+
+        form.addRow("Name:", self.name)
+        form.addRow("Category:", self.category)
+        form.addRow("User:", self.user)
+        form.addRow("Due:", self.due)
+        form.addRow("Status:", self.status)
+        form.addRow("Priority:", self.priority)
+        form.addRow("Description:", self.description)
+
+        btn_layout = QHBoxLayout()
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(save_btn)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        if task:
+            delete_btn = QPushButton("Delete")
+            delete_btn.clicked.connect(self.delete_task)
+            btn_layout.addWidget(delete_btn)
+            # Pre-fill values
+            self.name.setText(task['name'])
+            self.category.setCurrentText(task.get('category', CATEGORY_OPTIONS[0]))
+            self.user.setCurrentText(task['user'])
+            self.due.setDate(datetime.fromisoformat(task['due']).date())
+            self.status.setCurrentText(task['status'])
+            self.priority.setValue(task.get('priority', 0))
+            self.description.setPlainText(task.get('description', ''))
+
+        form.addRow(btn_layout)
 
     def get_data(self):
         return {
-            'name': f"[{self.category.currentText()}] {self.name.text().strip()}",
+            'name': self.name.text(),
+            'category': self.category.currentText(),
             'user': self.user.currentText(),
-            'due': self.due.date().toPyDate().isoformat(),
+            'due': self.due.date().toString(Qt.ISODate),
             'status': self.status.currentText(),
             'priority': self.priority.value(),
-            'description': self.desc.toPlainText().strip()
+            'description': self.description.toPlainText()
         }
 
-# --- Main Window ---
+    def delete_task(self):
+        confirm = QMessageBox.question(
+            self, "Confirm Delete", "Delete this task?"
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            resp = requests.delete(f"{API_URL}/tasks/{self.task['id']}")
+            if resp.status_code == 204:
+                self.done(2)  # Custom code to indicate deletion
+            else:
+                QMessageBox.warning(self, "Error", "Failed to delete task.")
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TaskTracker")
-        self.resize(900,600)
-        # Toolbar
-        toolbar = QToolBar(); self.addToolBar(toolbar)
-        add_act = QAction("New Task", self); add_act.triggered.connect(self.new_task)
-        toolbar.addAction(add_act); toolbar.addSeparator()
-        toolbar.addWidget(QLabel("Search:"))
-        self.search = QLineEdit(); self.search.setPlaceholderText("Search...")
-        self.search.textChanged.connect(self.load_tasks)
-        toolbar.addWidget(self.search)
-        toolbar.addWidget(QLabel("Category:"))
-        self.cat_f = QComboBox(); self.cat_f.addItem("All"); self.cat_f.addItems(CATEGORIES)
-        self.cat_f.currentTextChanged.connect(self.load_tasks)
-        toolbar.addWidget(self.cat_f)
-        toolbar.addWidget(QLabel("Status:"))
-        self.status_f = QComboBox(); self.status_f.addItem("All"); self.status_f.addItems(STATUSES)
-        self.status_f.currentTextChanged.connect(self.load_tasks)
-        toolbar.addWidget(self.status_f)
-        # Table
-        self.table = QTableWidget()
-        cols=["Name","User","Due","Status","Priority","Description"]
-        self.table.setColumnCount(len(cols)); self.table.setHorizontalHeaderLabels(cols)
-        hdr = self.table.horizontalHeader(); hdr.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.setCentralWidget(self.table)
-        # Status Bar
-        self.setStatusBar(QStatusBar())
-        # Timer
-        self.timer = QTimer(self); self.timer.timeout.connect(self.load_tasks); self.timer.start(5000)
-        self.load_username(); self.load_tasks()
+        self.setWindowTitle("Task Tracker")
+        self.resize(800, 600)
 
-    def load_username(self):
-        if CONFIG_PATH.exists(): return json.loads(CONFIG_PATH.read_text()).get('username')
-        n,ok=QInputDialog.getText(self,"Name","Enter your name:")
-        if ok and n.strip(): CONFIG_PATH.write_text(json.dumps({'username':n.strip()}))
+        container = QWidget(self)
+        layout = QVBoxLayout(container)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        self.search = QLineEdit(self)
+        self.search.setPlaceholderText("Search...")
+        toolbar.addWidget(self.search)
+        self.filter_category = QComboBox(self)
+        self.filter_category.addItem("All Categories")
+        self.filter_category.addItems(CATEGORY_OPTIONS)
+        toolbar.addWidget(self.filter_category)
+        self.filter_status = QComboBox(self)
+        self.filter_status.addItem("All Statuses")
+        self.filter_status.addItems(STATUS_OPTIONS)
+        toolbar.addWidget(self.filter_status)
+        new_btn = QPushButton("New Task")
+        new_btn.clicked.connect(self.new_task)
+        toolbar.addWidget(new_btn)
+        layout.addLayout(toolbar)
+
+        # Tasks table
+        self.table = QTableWidget(0, 8, self)
+        self.table.setHorizontalHeaderLabels([
+            "Name", "Category", "User", "Due",
+            "Status", "Priority", "Description", "Actions"
+        ])
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.cellDoubleClicked.connect(self.cell_double_clicked)
+        layout.addWidget(self.table)
+
+        self.setCentralWidget(container)
+
+        # Auto-refresh
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh_tasks)
+        self.timer.start(5000)
+
+        # Initial load
+        self.refresh_tasks()
+
+    def refresh_tasks(self):
+        thread = FetchThread()
+        thread.fetched.connect(self.populate_table)
+        thread.error.connect(lambda e: print(f"Fetch error: {e}"))
+        thread.start()
+
+    def populate_table(self, tasks):
+        self.table.setRowCount(0)
+        for task in tasks:
+            if (self.search.text() and self.search.text().lower() not in task['name'].lower()):
+                continue
+            if (self.filter_category.currentText() != "All Categories" and
+                    task.get('category') != self.filter_category.currentText()):
+                continue
+            if (self.filter_status.currentText() != "All Statuses" and
+                    task['status'] != self.filter_status.currentText()):
+                continue
+
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(task['name']))
+            self.table.setItem(row, 1, QTableWidgetItem(task.get('category', '')))
+            self.table.setItem(row, 2, QTableWidgetItem(task['user']))
+            self.table.setItem(row, 3, QTableWidgetItem(task['due']))
+            self.table.setItem(row, 4, QTableWidgetItem(task['status']))
+            self.table.setItem(row, 5, QTableWidgetItem(str(task.get('priority', 0))))
+            self.table.setItem(row, 6, QTableWidgetItem(task.get('description', '')))
+
+            # Actions
+            actions = QWidget()
+            h = QHBoxLayout(actions)
+            edit_btn = QPushButton("Edit")
+            edit_btn.clicked.connect(lambda _, t=task: self.edit_task(t))
+            h.addWidget(edit_btn)
+            delete_btn = QPushButton("Delete")
+            delete_btn.clicked.connect(lambda _, t=task: self.delete_task(t))
+            h.addWidget(delete_btn)
+            h.setContentsMargins(0, 0, 0, 0)
+            actions.setLayout(h)
+            self.table.setCellWidget(row, 7, actions)
 
     def new_task(self):
-        dlg=TaskDialog(self)
-        if dlg.exec():
-            data=dlg.get_data()
-            r=requests.post(f"{API_URL}/tasks",json=data)
-            if r.status_code==201: self.load_tasks()
-            else: self.statusBar().showMessage(f"Error: {r.text}",5000)
+        dlg = TaskDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            data = dlg.get_data()
+            requests.post(f"{API_URL}/tasks", json=data)
+            self.refresh_tasks()
 
-    def load_tasks(self):
-        r=requests.get(f"{API_URL}/tasks");
-        if not r.ok: return
-        self.tasks=r.json(); self.refresh_table()
+    def edit_task(self, task):
+        dlg = TaskDialog(self, task)
+        res = dlg.exec()
+        if res == QDialog.DialogCode.Accepted:
+            requests.put(f"{API_URL}/tasks/{task['id']}", json=dlg.get_data())
+            self.refresh_tasks()
+        elif res == 2:
+            self.refresh_tasks()
 
-    def refresh_table(self):
-        self.table.setRowCount(0)
-        s=self.search.text().lower(); cf=self.cat_f.currentText(); sf=self.status_f.currentText()
-        for t in self.tasks:
-            if s and s not in t['name'].lower(): continue
-            if cf!='All' and not t['name'].startswith(f"[{cf}]"): continue
-            if sf!='All' and t['status']!=sf: continue
-            i=self.table.rowCount(); self.table.insertRow(i)
-            self.table.setItem(i,0,QTableWidgetItem(t['name']))
-            self.table.setItem(i,1,QTableWidgetItem(t['user']))
-            self.table.setItem(i,2,QTableWidgetItem(t['due']))
-            cb=QComboBox(); cb.addItems(STATUSES); cb.setCurrentText(t['status'])
-            cb.currentTextChanged.connect(lambda v,tid=t['id']: self.update_status(tid,v))
-            self.table.setCellWidget(i,3,cb)
-            self.table.setItem(i,4,QTableWidgetItem(str(t.get('priority',1))))
-            self.table.setItem(i,5,QTableWidgetItem(t.get('description','')))
+    def delete_task(self, task):
+        confirm = QMessageBox.question(
+            self, "Confirm Delete", "Delete this task?"
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            requests.delete(f"{API_URL}/tasks/{task['id']}")
+            self.refresh_tasks()
 
-    def update_status(self,tid,st): requests.put(f"{API_URL}/tasks/{tid}/status",json={'status':st})
+    def cell_double_clicked(self, row, col):
+        task = {
+            'id': int(self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)),
+            'name': self.table.item(row, 0).text(),
+            'category': self.table.item(row, 1).text(),
+            'user': self.table.item(row, 2).text(),
+            'due': self.table.item(row, 3).text(),
+            'status': self.table.item(row, 4).text(),
+            'priority': int(self.table.item(row, 5).text()),
+            'description': self.table.item(row, 6).text(),
+        }
+        self.edit_task(task)
 
-if __name__=='__main__':
-    app=QApplication(sys.argv); apply_dark_theme(app)
-    w=MainWindow(); w.show(); sys.exit(app.exec())
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
