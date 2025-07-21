@@ -3,18 +3,13 @@ from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
-from sqlalchemy import (
-    create_engine, Column, Integer, String, Date)
+from sqlalchemy import create_engine, Column, Integer, String, Date
 from sqlalchemy.orm import sessionmaker, Session, declarative_base
 
 # --- Database Setup ---
 DATABASE_URL = "sqlite:///./tasks.db"
-engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}
-)
-SessionLocal = sessionmaker(
-    bind=engine, autoflush=False, autocommit=False
-)
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
 class TaskModel(Base):
@@ -46,7 +41,6 @@ class TaskCreate(TaskBase):
 
 class Task(TaskBase):
     id: int
-
     class Config:
         orm_mode = True
 
@@ -65,10 +59,7 @@ def get_db():
 
 # --- CRUD Endpoints ---
 @app.post("/tasks", response_model=Task)
-def create_task(
-    task: TaskCreate,
-    db: Session = Depends(get_db)
-):
+def create_task(task: TaskCreate, db: Session = Depends(get_db)):
     db_task = TaskModel(**task.dict())
     db.add(db_task)
     db.commit()
@@ -94,15 +85,10 @@ def read_tasks(
         query = query.filter(TaskModel.status == status)
     if user:
         query = query.filter(TaskModel.user == user)
-    tasks = query.offset(skip).limit(limit).all()
-    return tasks
+    return query.offset(skip).limit(limit).all()
 
 @app.put("/tasks/{task_id}", response_model=Task)
-def update_task(
-    task_id: int,
-    task: TaskCreate,
-    db: Session = Depends(get_db)
-):
+def update_task(task_id: int, task: TaskCreate, db: Session = Depends(get_db)):
     db_task = db.get(TaskModel, task_id)
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -113,11 +99,7 @@ def update_task(
     return db_task
 
 @app.put("/tasks/{task_id}/status", response_model=Task)
-def update_status(
-    task_id: int,
-    payload: StatusUpdate,
-    db: Session = Depends(get_db)
-):
+def update_status(task_id: int, payload: StatusUpdate, db: Session = Depends(get_db)):
     db_task = db.get(TaskModel, task_id)
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -127,10 +109,7 @@ def update_status(
     return db_task
 
 @app.delete("/tasks/{task_id}", status_code=204)
-def delete_task(
-    task_id: int,
-    db: Session = Depends(get_db)
-):
+def delete_task(task_id: int, db: Session = Depends(get_db)):
     db_task = db.get(TaskModel, task_id)
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
